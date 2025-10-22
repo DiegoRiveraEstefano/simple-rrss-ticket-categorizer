@@ -1,15 +1,30 @@
 [project]
 name = "simple-rrss-ticket-categorizer"
 version = "0.1.0"
-description = "Add your description here"
+description = "A simple social media ticket categorizer using scikit-learn."
+authors = [{ name = "Diego Rivera", email = "diego.rivera.estefano@gmail.com" }]
+license = { file = "MIT-LICENSE" }
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "joblib>=1.5.2",
+    "nltk>=3.9.2",
+    "pandas>=2.3.3",
     "scikit-learn>=1.7.2",
 ]
 
 [dependency-groups]
+api = ["fastapi>=0.119.1", "uvicorn[standard]>=0.38.0"]
 dev = [
+    "jupyterlab>=4.4.9",
     "pre-commit>=4.3.0",
     "pyrefly>=0.38.1",
     "pytest>=8.4.2",
@@ -20,14 +35,8 @@ dev = [
 [tool]
 [tool.pytest.ini_options]
 pythonpath = "simple_rrss_ticket_categorizer"
-testpaths = [
-  "simple_rrss_ticket_categorizer/tests/*",
-]
-addopts = [
-    "--import-mode=importlib",
-]
-
-
+testpaths = ["simple_rrss_ticket_categorizer/tests/*"]
+addopts = ["--import-mode=importlib"]
 
 [tool.ruff]
 target-version = "py313"
@@ -51,75 +60,73 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = [
-  "F",
-  "E",
-  "W",
-  "C90",
-  "I",
-  "N",
-  "UP",
-  "YTT",
-  # "ANN", # flake8-annotations: we should support this in the future but 100+ errors atm
-  "ASYNC",
-  "S",
-  "BLE",
-  "FBT",
-  "B",
-  "A",
-  "COM",
-  "C4",
-  "DTZ",
-  "T10",
-  "DJ",
-  "EM",
-  "EXE",
-  "FA",
-  'ISC',
-  "ICN",
-  "G",
-  'INP',
-  'PIE',
-  "T20",
-  'PYI',
-  'PT',
-  "Q",
-  "RSE",
-  "RET",
-  "SLF",
-  "SLOT",
-  "SIM",
-  "TID",
-  "TC",
-  "INT",
-  # "ARG", # Unused function argument
-  "PTH",
-  "ERA",
-  "PD",
-  "PGH",
-  "PL",
-  "TRY",
-  "FLY",
-  # "NPY",
-  # "AIR",
-  "PERF",
-  # "FURB",
-  # "LOG",
-  "RUF",
+    "F",
+    "E",
+    "W",
+    "C90",
+    "I",
+    "N",
+    "UP",
+    "YTT",
+    # "ANN", # flake8-annotations: we should support this in the future but 100+ errors atm
+    "ASYNC",
+    "S",
+    "BLE",
+    "FBT",
+    "B",
+    "A",
+    "COM",
+    "C4",
+    "DTZ",
+    "T10",
+    "DJ",
+    "EM",
+    "EXE",
+    "FA",
+    'ISC',
+    "ICN",
+    "G",
+    'INP',
+    'PIE',
+    "T20",
+    'PYI',
+    'PT',
+    "Q",
+    "RSE",
+    "RET",
+    "SLF",
+    "SLOT",
+    "SIM",
+    "TID",
+    "TC",
+    "INT",
+    # "ARG", # Unused function argument
+    "PTH",
+    "ERA",
+    "PD",
+    "PGH",
+    "PL",
+    "TRY",
+    "FLY",
+    # "NPY",
+    # "AIR",
+    "PERF",
+    # "FURB",
+    # "LOG",
+    "RUF",
 ]
 ignore = [
-  "S101", # Use of assert detected https://docs.astral.sh/ruff/rules/assert/
-  "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
-  "SIM102", # sometimes it's better to nest
-  "UP038", # Checks for uses of isinstance/issubclass that take a tuple
-          # of types for comparison.
-          # Deactivated because it can make the code slow:
-          # https://github.com/astral-sh/ruff/issues/7871
+    "S101",   # Use of assert detected https://docs.astral.sh/ruff/rules/assert/
+    "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+    "SIM102", # sometimes it's better to nest
+    "UP038",  # Checks for uses of isinstance/issubclass that take a tuple
+    # of types for comparison.
+    # Deactivated because it can make the code slow:
+    # https://github.com/astral-sh/ruff/issues/7871
 ]
 # The fixes in extend-unsafe-fixes will require
 # provide the `--unsafe-fixes` flag when fixing.
-extend-unsafe-fixes = [
-  "UP038",
-]
+extend-unsafe-fixes = ["UP038"]
 
 [tool.ruff.lint.isort]
 force-single-line = true
@@ -133,5 +140,3 @@ project-excludes = [
     "**/*venv/**/*",
     "**/.[!/.]*/**/*",
 ]
-
-
