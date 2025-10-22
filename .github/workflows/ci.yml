@@ -1,0 +1,33 @@
+name: CI Simple
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: astral-sh/setup-uv@v2
+      with:
+        python-version: '3.12'
+
+    - name: Instalar dependencias
+      run: |
+        uv sync
+
+    - name: Ejecutar linters
+      run: |
+        uv run ruff check .
+        uv run ruff format --check .
+
+    - name: Ejecutar type checking
+      run: |
+        uv run pyrefly check
+
+    - name: Ejecutar tests
+      run: |
+        uv run pytest -v --cov=simple_rrss_ticket_categorizer --cov-report=xml
