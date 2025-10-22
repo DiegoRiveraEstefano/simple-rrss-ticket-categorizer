@@ -1,0 +1,17 @@
+[project]
+name = "simple-rrss-ticket-categorizer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "scikit-learn>=1.7.2",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+    "pyrefly>=0.38.1",
+    "pytest>=8.4.2",
+    "ruff>=0.14.1",
+]
