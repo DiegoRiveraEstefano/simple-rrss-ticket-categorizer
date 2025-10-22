@@ -50,7 +50,7 @@ print(f"Datos de prueba cargados: {len(X_test)} tickets")
 
 print("\nCreando el Pipeline de IA...")
 
-[cite_start]# [cite: 38] Se definen las librerías, métodos y parámetros
+#[cite_start]# [cite: 38] Se definen las librerías, métodos y parámetros
 text_classifier_pipeline = Pipeline([
     
     # Paso 1: 'vect' (Vectorizador)
