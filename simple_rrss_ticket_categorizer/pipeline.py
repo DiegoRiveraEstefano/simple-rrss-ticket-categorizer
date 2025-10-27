@@ -215,8 +215,18 @@ def predict_ticket_simple(model, subject, body=""):
     subject = str(subject) if subject is not None else ""
     body = str(body) if body is not None else ""
 
-    combined_text = subject + " " + body
-    prediction = model.predict([combined_text])[0]
+    # 1. Crear un DataFrame con las columnas correctas
+    # (exactamente como los datos de entrenamiento)
+    data_to_predict = pd.DataFrame(
+        {
+            "subject": [subject],  # El dato debe estar dentro de una lista
+            "body": [body],  # El dato debe estar dentro de una lista
+        },
+    )
+
+    # 2. Predecir usando el DataFrame
+    # El pipeline ahora encontrará las columnas 'subject' y 'body'
+    prediction = model.predict(data_to_predict)[0]
 
     print(f"\nAsunto: {subject}")
     print(f"Categoría predicha: {prediction}")
@@ -238,7 +248,7 @@ if __name__ == "__main__":
     model, X_test, y_test = train_simple_model(df_final)
 
     # 4. Guardar modelo
-    joblib.dump(model, "simple_ticket_classifier.pkl")
+    joblib.dump(model, "models/simple_ticket_classifier.pkl")
     df_final.to_csv("data/processed/tickets_simple_categories.csv", index=False)
 
     print("\n✅ MODELO SIMPLE GUARDADO")
