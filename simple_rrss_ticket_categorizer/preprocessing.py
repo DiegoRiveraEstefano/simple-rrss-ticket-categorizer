@@ -1,186 +1,204 @@
-import logging as logger
+# data_cleaning.py
 
-import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator
-from sklearn.base import TransformerMixin
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.preprocessing import OrdinalEncoder
-from sklearn.preprocessing import StandardScaler
-
-logger = logger.getLogger(__name__)
 
 
-def load_data(csv_path: str) -> pd.DataFrame:
-    """
-    Carga y limpia inicialmente el dataset de tickets de IT.
+def load_data(filepath):
+    """Carga los datos desde un archivo CSV o Excel."""
+    if filepath.endswith(".csv"):
+        df: pd.DataFrame = pd.read_csv(filepath)
+    elif filepath.endswith(".xlsx"):
+        df: pd.DataFrame = pd.read_excel(filepath)
+    else:
+        raise ValueError("Formato de archivo no soportado. Usa .csv o .xlsx")
+    if df is None:
+        raise ValueError("El archivo no contiene datos válidos.")
+    if df.empty:
+        raise ValueError("El archivo está vacío o no contiene datos válidos.")
+    return df
 
-    Maneja los formatos de fecha y los decimales con coma.
-    """
-    try:
-        # El ejemplo muestra comas como decimales
-        df = pd.read_csv(
-            csv_path,
-            decimal=",",  # Clave para '2,58'
-            parse_dates=["Created_Date", "Resolved_Date"],  # Intenta parsear fechas
-            dayfirst=True,  # Asume formato DD/MM/YYYY
-        )
-    except Exception as e:
-        logger.exception(f"Error cargando el CSV: {e}")  # noqa: G004, TRY401
-        return pd.DataFrame()
 
-    # Asegura que las columnas de 'Yes/No' sean string para el preprocesador
-    df["Automation_Used"] = df["Automation_Used"].astype(str)
-    df["Resolved_First_Contact"] = df["Resolved_First_Contact"].astype(str)
+def clean_text_columns(df: pd.DataFrame):
+    """Limpia columnas de texto: quita espacios, normaliza mayúsculas/minúsculas, elimina caracteres especiales innecesarios."""
+    text_cols = ["subject", "body", "answer"]
+    for col in text_cols:
+        if col in df.columns:
+            # Convertir a string y quitar espacios
+            df[col] = df[col].astype(str).str.strip()
+            # Eliminar múltiples espacios y reemplazar por uno solo
+            df[col] = df[col].str.replace(r"\s+", " ", regex=True)
+            # Quitar caracteres no alfanuméricos (excepto espacios y puntuación básica)
+            df[col] = df[col].str.replace(r"[^\w\s.,!?;:()\-]", "", regex=True)
+    return df
+
+
+def handle_missing_values(df: pd.DataFrame):
+    """Rellena o elimina valores faltantes según la columna."""
+    # Para columnas críticas: type, queue, priority
+    df["type"] = df["type"].fillna("Unknown")
+    df["queue"] = df["queue"].fillna("Unknown")
+    df["priority"] = df["priority"].fillna("medium")
+
+    # Para language: si está vacío, asignar "en" (inglés) como default
+    df["language"] = df["language"].fillna("en")
+
+    # Para business_type: si está vacío, asignar "Unknown"
+    df["business_type"] = df["business_type"].fillna("Unknown")
+
+    # Para subject y body: llenar con texto por defecto si están vacíos
+    df["subject"] = df["subject"].fillna("No subject provided")
+    df["body"] = df["body"].fillna("No content provided")
+    df["answer"] = df["answer"].fillna("No resolution provided")
+
+    # Para las columnas de tags (tag_1 a tag_9): llenar con string vacío
+    tag_columns = [f"tag_{i}" for i in range(1, 10)]
+    for tag_col in tag_columns:
+        if tag_col in df.columns:
+            df[tag_col] = df[tag_col].fillna("")
 
     return df
 
 
-def create_preprocessor() -> ColumnTransformer:
-    """
-    Crea un ColumnTransformer de Scikit-learn para procesar los datos
-    de los tickets de IT.
-    """
+def extract_features_from_description(df: pd.DataFrame):
+    """Extrae características útiles del texto de la descripción."""
+    # Combinar subject y body para análisis de texto
+    df["combined_text"] = df["subject"] + " " + df["body"]
 
-    # --- 1. Definir listas de columnas por tipo ---
+    # Contar longitud del texto
+    df["text_length"] = df["combined_text"].str.len()
+    df["word_count"] = df["combined_text"].str.split().str.len()
 
-    # Columnas numéricas que necesitan imputación (mediana) y escalado
-    numeric_features = ["Customer_Satisfaction"]
-
-    # Columnas categóricas que necesitan imputación (moda) y One-Hot Encoding
-    categorical_features = ["Ticket_Type", "Channel"]
-
-    # Columnas binarias (Yes/No) que necesitan imputación y codificación ordinal
-    # Se especifica el orden para que 'No' sea 0 y 'Yes' sea 1
-    binary_features = ["Automation_Used", "Resolved_First_Contact"]
-    binary_categories = [["No", "Yes"], ["No", "Yes"]]
-
-    # Columnas de Datetime para ingeniería de características
-    datetime_features = ["Created_Date"]
-
-    # Columnas a eliminar
-    # Ticket_ID no tiene valor predictivo.
-    # Resolved_Date causa 'fuga de datos' si predecimos Resolution_Time.
-    drop_features = ["Ticket_ID", "Resolved_Date"]
-
-    # --- 2. Crear los pipelines de transformación ---
-
-    # Pipeline para features numéricas
-    numeric_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ],
-    )
-
-    # Pipeline para features categóricas
-    categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-        ],
-    )
-
-    # Pipeline para features binarias
-    binary_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),  # Rellena 'nan'
-            ("ordinal", OrdinalEncoder(categories=binary_categories)),
-        ],
-    )
-
-    # Pipeline para features de fecha (Ingeniería de Características)
-    # Esta es una forma de extraer features de fechas dentro de un pipeline
-    class DatetimeFeatureExtractor(BaseEstimator, TransformerMixin):
-        def fit(self, x, y=None):
-            return self
-
-        def transform(self, x, y=None):
-            df = pd.DataFrame(x, columns=np.array(datetime_features))
-            # Asegura que sea datetime
-            df["Created_Date"] = pd.to_datetime(df["Created_Date"])
-
-            features = pd.DataFrame()
-            features["hour_created"] = df["Created_Date"].dt.hour
-            features["dayofweek_created"] = df["Created_Date"].dt.dayofweek
-            features["month_created"] = df["Created_Date"].dt.month
-            return features
-
-    # NOTA: Usar clases custom puede ser complejo. Un enfoque más simple
-    # es hacer la ingeniería de fechas en Pandas ANTES de llamar al preprocesador.
-
-    # --- 3. Crear el ColumnTransformer (Enfoque Simplificado) ---
-    # Este preprocesador asume que la ingeniería de fechas (hour, dayofweek)
-    # se hizo ANTES de pasar el DataFrame.
-
-    # Nuevas listas de columnas (asumiendo que se corre una función previa)
-    # numeric_features_expanded = ['Customer_Satisfaction', 'hour_created',
-    #                              'dayofweek_created', 'month_created']
-
-    # categorical_features = ['Ticket_Type', 'Channel']  # noqa: ERA001
-    # binary_features = ['Automation_Used', 'Resolved_First_Contact']  # noqa: ERA001
-
-    # --- Enfoque Final y Robusto (sin clases custom) ---
-    # Es más limpio hacer la ing. de fechas fuera del pipeline.
-    # Este preprocesador se aplicará a un DF que ya tiene esas columnas.
-
-    numeric_features = [
-        "Customer_Satisfaction",
-        "hour_created",
-        "dayofweek_created",
-        "month_created",
+    # Detectar palabras clave relacionadas con urgencia
+    urgency_keywords = [
+        "urgent",
+        "critical",
+        "immediate",
+        "asap",
+        "emergency",
+        "urgente",
+        "crítico",
+        "inmediato",
+        "emergencia",
+        "dringend",
+        "kritisch",
+        "sofortig",
+        "urgence",
+        "critique",
+        "immédiat",
     ]
 
-    categorical_features = ["Ticket_Type", "Channel"]
-
-    binary_features = ["Automation_Used", "Resolved_First_Contact"]
-
-    # El preprocesador final
-    return ColumnTransformer(
-        transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
-            ("bin", binary_transformer, binary_features),
-            # Se especifica 'drop' para las columnas que no listamos
-            ("drop_cols", "drop", ["Ticket_ID", "Created_Date", "Resolved_Date"]),
-        ],
-        remainder="passthrough",  # Mantiene columnas no especificadas (como la
-        # target si se dejó)
+    df["has_urgency_keyword"] = (
+        df["combined_text"]
+        .str.contains(
+            "|".join(urgency_keywords),
+            case=False,
+            na=False,
+        )
+        .astype(int)
     )
 
+    # Detectar si hay errores técnicos
+    error_keywords = [
+        "error",
+        "bug",
+        "fail",
+        "crash",
+        "broken",
+        "issue",
+        "problem",
+        "error",
+        "falla",
+        "trabado",
+        "problema",
+        "incidente",
+        "fehler",
+        "absturz",
+        "kaputt",
+        "problem",
+        "erreur",
+        "bug",
+        "panne",
+        "casse",
+        "problème",
+    ]
 
-def feature_engineer_datetimes(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Crea características (features) a partir de las columnas de fecha.
-    """
-    df_out = df.copy()
-    # Asegura que la columna es datetime
-    df_out["Created_Date"] = pd.to_datetime(df_out["Created_Date"])
+    df["has_error_keyword"] = (
+        df["combined_text"]
+        .str.contains(
+            "|".join(error_keywords),
+            case=False,
+            na=False,
+        )
+        .astype(int)
+    )
 
-    df_out["hour_created"] = df_out["Created_Date"].dt.hour
-    df_out["dayofweek_created"] = df_out["Created_Date"].dt.dayofweek
-    df_out["month_created"] = df_out["Created_Date"].dt.month
-
-    return df_out
+    return df
 
 
-def get_feature_names(preprocessor: ColumnTransformer) -> list:
-    """Extrae los nombres de las features del ColumnTransformer."""
-    feature_names = []
+def create_target_column(df: pd.DataFrame):
+    """Crea columnas objetivo para clasificación basadas en el dataset."""
+    # Opción 1: Usar 'type' como objetivo principal
+    df["target_type"] = df["type"].copy()
 
-    # Nombres de features numéricas y de fechas
-    feature_names.extend(preprocessor.transformers_[0][2])
+    # Opción 2: Usar 'queue' como objetivo secundario
+    df["target_queue"] = df["queue"].copy()
 
-    # Nombres de features categóricas (OneHotEncoded)
-    onehot_cols = preprocessor.named_transformers_["cat"][
-        "onehot"
-    ].get_feature_names_out(preprocessor.transformers_[1][2])
-    feature_names.extend(onehot_cols)
+    # Opción 3: Crear categoría combinada para clasificación más granular
+    df["target_combined"] = df["type"] + "_" + df["queue"]
 
-    # Nombres de features binarias
-    feature_names.extend(preprocessor.transformers_[2][2])
+    return df
 
-    return feature_names
+
+def encode_categorical_variables(df: pd.DataFrame):
+    """Codifica variables categóricas para modelado."""
+    # Columnas categóricas principales
+    categorical_columns = ["type", "queue", "priority", "language", "business_type"]
+
+    # Crear dummies para las categorías principales
+    for col in categorical_columns:
+        if col in df.columns:
+            dummies = pd.get_dummies(df[col], prefix=col)
+            df = pd.concat([df, dummies], axis=1)
+
+    # Crear características de tags (combinar todos los tags en una lista)
+    tag_columns = [f"tag_{i}" for i in range(1, 10) if f"tag_{i}" in df.columns]
+    if tag_columns:
+        df["all_tags"] = df[tag_columns].apply(
+            lambda x: ",".join(x.dropna().astype(str)),
+            axis=1,
+        )
+        # Crear dummies para los tags más comunes
+        all_tags_combined = df[tag_columns].stack().value_counts()
+        top_tags = all_tags_combined.head(20).index  # Top 20 tags más comunes
+
+        for tag in top_tags:
+            df[f"tag_{tag.replace(' ', '_').lower()}"] = df[tag_columns].apply(
+                lambda x: 1 if tag in x.values else 0,
+                axis=1,
+            )
+
+    return df
+
+
+def preprocess_data(df: pd.DataFrame):
+    """Función principal que aplica todas las transformaciones."""
+    print("Iniciando limpieza de datos...")
+    df = clean_text_columns(df)
+    df = handle_missing_values(df)
+    df = extract_features_from_description(df)
+    df = create_target_column(df)
+    df = encode_categorical_variables(df)
+    print("Limpieza completada.")
+    return df
+
+
+if __name__ == "__main__":
+    # Ejemplo de uso
+    df = load_data(
+        "data/raw/dataset-tickets-multi-lang3-4k.csv",
+    )  # Actualiza con la ruta correcta
+    df_cleaned = preprocess_data(df)
+    df_cleaned.to_csv("data/processed/tickets_cleaned-3.csv", index=False)
+    print("Datos guardados en 'tickets_cleaned-3.csv'")
+    print(f"Shape del dataset limpio: {df_cleaned.shape}")
+    print(f"Columnas disponibles: {df_cleaned.columns.tolist()}")

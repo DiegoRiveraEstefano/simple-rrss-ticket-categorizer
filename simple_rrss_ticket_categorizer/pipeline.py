@@ -1,140 +1,257 @@
-from logging import getLogger
-from pathlib import Path
+import re
+import warnings
 
 import joblib
-import numpy as np
+import nltk
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error
+
+# from imblearn.pipeline import Pipeline as ImbPipeline
+from nltk.corpus import stopwords
+from nltk.stem.snowball import SnowballStemmer
+from nltk.stem.wordnet import WordNetLemmatizer
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection._search import GridSearchCV
 from sklearn.pipeline import Pipeline
+from sklearn.svm import LinearSVC
 
-from .preprocessing import create_preprocessor
-from .preprocessing import feature_engineer_datetimes
-
-# Importa las funciones de preprocesamiento del otro archivo
-from .preprocessing import load_data
-
-# --- Constantes del Proyecto ---
-# Define las carpetas y nombres de archivos
-BASE_DIR = Path(__file__).resolve().parent.parent
-RAW_DATA = BASE_DIR / "data" / "raw"
-PROCESSED_DATA = BASE_DIR / "data" / "processed"
-MODEL_DIR = BASE_DIR / "models"
-FILE_NAME = "it_support_tickets.csv"
-TRAIN_DATA_FILE = RAW_DATA / FILE_NAME  # Asume que este es tu CSV
-MODEL_NAME = "it_ticket_regressor.joblib"
-MODEL_PATH = MODEL_DIR / MODEL_NAME
-
-# Define la variable objetivo y las columnas a dropear
-TARGET_VARIABLE = "Resolution_Time_Hours"
-
-logger = getLogger(__name__)
+warnings.filterwarnings("ignore")
+nltk.download("wordnet", download_dir=".downloaded/")
+lemmatizer = WordNetLemmatizer()
+stemmer = SnowballStemmer("english")
 
 
-def create_pipeline() -> Pipeline:
-    """
-    Crea el pipeline completo de scikit-learn uniendo el
-    preprocesador y el modelo de regresión.
-    """
+def clean_text_data(df):
+    """Limpia y asegura que las columnas de texto no tengan NaN"""
 
-    # 1. Obtiene el preprocesador de columnas
-    preprocessor = create_preprocessor()
+    # Rellenar NaN con strings vacíos
+    df["subject"] = df["subject"].fillna("")
+    df["body"] = df["body"].fillna("")
 
-    # 2. Define el modelo de Machine Learning
-    # Usamos RandomForestRegressor, un modelo robusto que funciona bien
-    # sin mucho ajuste de hiperparámetros.
-    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    # Asegurar que sean strings
+    df["subject"] = df["subject"].astype(str)
+    df["body"] = df["body"].astype(str)
 
-    # 3. Crea el Pipeline final
-    # Este pipeline ejecutará primero todo el preprocesamiento
-    # y luego pasará los datos limpios al RandomForest.
-    return Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("model", model),
+    return df
+
+
+def create_simple_categories(df):
+    """Crea categorías simplificadas basadas en el dataset"""
+
+    print("=== CREANDO CATEGORÍAS SIMPLIFICADAS ===")
+
+    # Mapeo directo basado en las columnas existentes
+    def assign_simple_category(row):
+        # Usar la columna 'type' como base y refinar con 'queue'
+        ticket_type = row.get("type", "Unknown")
+        queue = str(row.get("queue", "Unknown")).lower()
+
+        if ticket_type == "Incident":
+            return "Technical_Support"
+        if ticket_type == "Request":
+            if "billing" in queue or "payment" in queue:
+                return "Billing_Support"
+            return "Customer_Service"
+        if ticket_type == "Problem":
+            return "Technical_Support"
+        if ticket_type == "Change":
+            return "Service_Management"
+        return "General_Support"
+
+    df["Simple_Target"] = df.apply(assign_simple_category, axis=1)
+
+    print("Distribución de categorías:")
+    print(df["Simple_Target"].value_counts())
+
+    return df
+
+
+def build_simple_model():
+    """Construye un modelo simple pero efectivo"""
+
+    nltk.download("stopwords", download_dir=".downloaded/")
+    stopwords_list = [
+        *stopwords.words("english"),
+        *stopwords.words("french"),
+        *stopwords.words("german"),
+        *stopwords.words("italian"),
+        *stopwords.words("portuguese"),
+        *stopwords.words("spanish"),
+    ]
+
+    text_processing_pipeline = Pipeline(
+        [
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    # ¡LA MAGIA ESTÁ AQUÍ!
+                    # TfidfVectorizer aplicará esta función a cada documento
+                    preprocessor=preprocess_text,
+                    # El resto de tus parámetros (los valores base)
+                    sublinear_tf=True,
+                    norm="l2",
+                    min_df=3,
+                    max_df=0.85,
+                    stop_words=stopwords_list,
+                    strip_accents="unicode",
+                    # max_features y ngram_range serán establecidos por GridSearchCV
+                ),
+            ),
         ],
     )
 
+    feature_transformer = ColumnTransformer(
+        [
+            ("subject_features", text_processing_pipeline, "subject"),
+            ("body_features", text_processing_pipeline, "body"),
+        ],
+        remainder="drop",  # No usar otras columnas
+    )
 
-def load_data_raw_or_processed(raw_data: Path) -> tuple[pd.DataFrame, bool]:
-    """
-    Carga los datos de entrenamiento o prueba.
-    Si no existe el archivo de entrenamiento, se carga el archivo de prueba.
-    Retorna un DataFrame y un booleano indicando si los datos son procesados.
-    """
-    if (PROCESSED_DATA / FILE_NAME).exists():
-        return load_data(str(PROCESSED_DATA / FILE_NAME)), True
-    return load_data(str(RAW_DATA / FILE_NAME)), False
+    model = Pipeline(
+        [
+            ("features", feature_transformer),  # El ColumnTransformer es el primer paso
+            (
+                "classifier",
+                LinearSVC(
+                    class_weight="balanced",
+                    random_state=42,
+                    max_iter=10000,
+                    dual=False,
+                    loss="squared_hinge",
+                ),
+            ),
+        ],
+    )
+
+    return model
 
 
-def train_pipeline():
-    """
-    Función principal para entrenar y guardar el pipeline.
-    """
-    logger.info("Iniciando el proceso de entrenamiento...")
+def preprocess_text(text):
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|mailto:\S+", "", text)  # URLs/correos
+    text = re.sub(r"\d+", "", text)  # números (opcional)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[^\w\s]", " ", text)
+    ##tokens = text.split()
+    # stemmed_tokens = [lemmatizer.lemmatize(token) for token in tokens]
+    # return " ".join(stemmed_tokens)
+    return text
 
-    # Asegura que la carpeta de modelos exista
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Cargar datos
-    logger.info(f"Cargando datos desde {TRAIN_DATA_FILE}...")  # noqa: G004
-    df, is_processed = load_data_raw_or_processed(TRAIN_DATA_FILE)
+def train_simple_model(df, target_col="Simple_Target"):
+    """Entrena el modelo simplificado usando GridSearchCV"""
 
-    if df.empty:
-        logger.warning("No se pudieron cargar los datos. Abortando.")
-        return
+    print("\n=== ENTRENANDO MODELO SIMPLIFICADO CON GRIDSEARCHCV ===")
 
-    if not is_processed:
-        # 2. Ingeniería de Características (Fechas)
-        logger.info("Realizando ingeniería de características (datetime)...")
-        df = feature_engineer_datetimes(df)
+    X = df[["subject", "body"]]
+    y = df[target_col]
 
-        # 3. Eliminar filas donde el objetivo es nulo
-        df = df.dropna(subset=[TARGET_VARIABLE])
-
-        # 4. Guardar datos procesados para futuros usos
-        logger.info(f"Guardando datos procesados en {PROCESSED_DATA / FILE_NAME}...")  # noqa: G004
-        PROCESSED_DATA.mkdir(parents=True, exist_ok=True)
-        df.to_csv(PROCESSED_DATA / FILE_NAME, index=False)
-
-    # 4. Definir X (features) e y (target)
-    y = df[TARGET_VARIABLE]
-    X = df.drop(columns=[TARGET_VARIABLE])  # El preprocesador se encarga del resto
-
-    # 5. Dividir en Train/Test
-    logger.info("Dividiendo datos en entrenamiento y prueba...")
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
         test_size=0.2,
         random_state=42,
+        stratify=y,
     )
 
-    # 6. Crear y Entrenar el Pipeline
-    logger.info("Creando pipeline...")
-    pipeline = create_pipeline()
+    # 1. Construir el pipeline (asegúrate que sea el de la Solución 1)
+    pipeline = build_simple_model()
 
-    logger.info("Entrenando modelo...")
-    pipeline.fit(X_train, y_train)
+    # 2. Definir la grilla de parámetros a probar
+    # 'tfidf__C' accede al parámetro 'C' del paso 'classifier'
+    param_grid = {
+        # Parámetros del clasificador
+        "classifier__C": [0.01, 0.1, 0.5],
+        "classifier__penalty": ["l1", "l2"],
+        # Parámetros para el TF-IDF del ASUNTO
+        "features__subject_features__tfidf__max_features": [1000, 3000, 5000],
+        "features__subject_features__tfidf__ngram_range": [(1, 2), (1, 3)],
+        # Parámetros para el TF-IDF del CUERPO
+        "features__body_features__tfidf__max_features": [3000, 5000, 10000],
+        "features__body_features__tfidf__ngram_range": [(1, 2)],
+    }
 
-    # 7. Evaluar el modelo
-    logger.info("Evaluando modelo...")
-    y_pred = pipeline.predict(X_test)
+    # 3. Configurar GridSearchCV
+    # Buscará el mejor 'f1_weighted' para manejar desbalanceo
+    # cv=3 (3-fold cross-validation) es más rápido que el default de 5
+    # n_jobs=-1 usa todos tus núcleos de CPU
+    grid_search = GridSearchCV(
+        pipeline,
+        param_grid,
+        cv=3,
+        scoring="f1_weighted",
+        n_jobs=-1,
+        verbose=1,
+    )
 
-    # Usamos RMSE (Root Mean Squared Error) para regresión
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    logger.info(f"Evaluación completada. RMSE en Test: {rmse:.4f} horas")
+    print("Iniciando búsqueda de hiperparámetros...")
+    grid_search.fit(X_train, y_train)
 
-    # 8. Guardar el pipeline entrenado
-    logger.info(f"Guardando modelo en {MODEL_PATH}...")
-    joblib.dump(pipeline, MODEL_PATH)
+    # 4. Usar el mejor modelo encontrado
+    print(f"\nMejores parámetros encontrados: {grid_search.best_params_}")
+    model = grid_search.best_estimator_
 
-    logger.info("--- Proceso de entrenamiento finalizado ---")
+    # 5. Evaluación
+    y_pred = model.predict(X_test)
+    train_score = model.score(X_train, y_train)
+    test_score = model.score(X_test, y_test)
+
+    print(f"Accuracy - Entrenamiento (Mejor Modelo): {train_score:.3f}")
+    print(f"Accuracy - Prueba (Mejor Modelo): {test_score:.3f}")
+
+    print("\n=== REPORTE DE CLASIFICACIÓN (Mejor Modelo) ===")
+    print(classification_report(y_test, y_pred))
+
+    return model, X_test, y_test
+
+
+def predict_ticket_simple(model, subject, body=""):
+    """Predice la categoría de forma simple"""
+
+    # Asegurar que los inputs sean strings
+    subject = str(subject) if subject is not None else ""
+    body = str(body) if body is not None else ""
+
+    combined_text = subject + " " + body
+    prediction = model.predict([combined_text])[0]
+
+    print(f"\nAsunto: {subject}")
+    print(f"Categoría predicha: {prediction}")
+
+    return prediction
 
 
 if __name__ == "__main__":
-    # Esto permite ejecutar el archivo directamente desde la terminal
-    # para entrenar el modelo.
-    # python -m simple_rrss_ticket_categorizer.pipeline
-    train_pipeline()
+    # Cargar datos
+    df_cleaned = pd.read_csv("data/processed/tickets_cleaned-3.csv")
+
+    # 1. Limpiar datos de texto
+    df_cleaned = clean_text_data(df_cleaned)
+
+    # 2. Crear categorías simplificadas
+    df_final = create_simple_categories(df_cleaned)
+
+    # 3. Entrenar modelo simple
+    model, X_test, y_test = train_simple_model(df_final)
+
+    # 4. Guardar modelo
+    joblib.dump(model, "simple_ticket_classifier.pkl")
+    df_final.to_csv("data/processed/tickets_simple_categories.csv", index=False)
+
+    print("\n✅ MODELO SIMPLE GUARDADO")
+
+    # 5. Probar con ejemplos
+    test_cases = [
+        "Problema crítico del servidor requiere atención inmediata",
+        "Consulta sobre disponibilidad de producto",
+        "Error en la facturación del servicio",
+        "Solicitud de cambio de configuración",
+        "Problema técnico con el software",
+    ]
+
+    print("\n=== PRUEBAS RÁPIDAS ===")
+    for test_case in test_cases:
+        predict_ticket_simple(model, test_case)
