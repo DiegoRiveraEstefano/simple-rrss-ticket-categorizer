@@ -1,4 +1,3 @@
-import re
 import warnings
 
 import joblib
@@ -144,6 +143,13 @@ def plot_gridsearch_heatmap(grid_search, param1, param2):
     print("✅ Heatmap de GridSearchCV guardado en 'gridsearch_heatmap.png'")
 
 
+def tokenize_text(text, amount=2):
+    """Preprocesa el texto para que sea compatible con el modelo."""
+    return " ".join(
+        [t for t in text.split() if len(t) > amount],
+    )
+
+
 def clean_text_data(df):
     """Limpia y asegura que las columnas de texto no tengan NaN"""
 
@@ -158,182 +164,6 @@ def clean_text_data(df):
     return df
 
 
-def create_simple_categories(df: pd.DataFrame):
-    """
-    Crea categorías simplificadas basadas en el dataset,
-    priorizando la 'queue' para mayor precisión.
-    """
-    print("=== CREANDO CATEGORÍAS SIMPLIFICADAS (Lógica Mejorada) ===")
-
-    def assign_simple_category(row):
-        ticket_type = str(row.get("type", "Unknown")).lower()
-        queue = str(row.get("queue", "Unknown")).lower()
-
-        # 1. Billing (La más específica)
-        # Usamos 'in' para capturar 'billing and payments'
-        if "billing" in queue or "payment" in queue:
-            return "Billing_Support"
-
-        # 2. Technical Support (Agrupa todos los tipos de soporte técnico)
-        # Usamos 'type' Incident/Problem Y las colas técnicas
-        if (
-            ticket_type in ["incident", "problem"]
-            or "technical support" in queue
-            or "it support" in queue
-            or "product support" in queue
-            or "service outages" in queue
-        ):
-            return "Technical_Support"
-
-        # 3. Service Management (Cambios, solicitudes de RH, etc.)
-        if ticket_type == "change" or "human resources" in queue:
-            return "Service_Management"
-
-        # 4. Customer Service (El resto: Requests, General, Sales)
-        # Todo lo que queda, que son principalmente consultas y solicitudes no técnicas.
-        # (Incluye 'request', 'customer service', 'general inquiry', 'sales', 'returns')
-        return "Customer_Service"
-
-    df["Simple_Target"] = df.apply(assign_simple_category, axis=1)
-
-    print("Distribución de categorías (Lógica Mejorada):")
-    print(df["Simple_Target"].value_counts())
-
-    return df
-
-
-def add_text_features(df):
-    """
-    Agrega un conjunto robusto de features numéricas derivadas del texto
-    para mejorar la clasificación.
-    """
-
-    # 0. Limpieza preliminar y creación de texto unificado
-    # Asegura que no haya NaNs y crea un campo unificado para búsquedas de keywords
-    df["subject"] = df["subject"].fillna("").astype(str)
-    df["body"] = df["body"].fillna("").astype(str)
-    df["full_text"] = df["subject"] + " " + df["body"]
-
-    # --- 1. Features de Longitud y Ratio ---
-    df["subject_length"] = df["subject"].str.len()
-    df["body_length"] = df["body"].str.len()
-    df["subject_word_count"] = df["subject"].str.split().str.len()
-    df["body_word_count"] = df["body"].str.split().str.len()
-
-    # Feature: Ratio de mayúsculas en el asunto (señal de urgencia/enojo)
-    df["subject_uppercase_ratio"] = df["subject"].apply(
-        lambda x: sum(1 for c in x if c.isupper()) / max(len(x), 1),
-    )
-
-    # Feature NUEVA: Ratio de mayúsculas en el cuerpo
-    df["body_uppercase_ratio"] = df["body"].apply(
-        lambda x: sum(1 for c in x if c.isupper()) / max(len(x), 1),
-    )
-
-    # Feature NUEVA: Largo promedio de palabra (textos técnicos suelen tener palabras más largas)
-    # Usamos np.where para evitar división por cero si body_word_count es 0
-    df["avg_word_length_body"] = np.where(
-        df["body_word_count"] > 0,
-        df["body_length"] / df["body_word_count"],
-        0,
-    )
-
-    # --- 2. Features de Puntuación y Caracteres Especiales ---
-
-    # Busca en el texto completo (más eficiente)
-    df["has_question_mark"] = (
-        df["full_text"].str.contains(r"\?", regex=True).astype(int)
-    )
-    df["has_exclamation"] = df["full_text"].str.contains(r"!", regex=True).astype(int)
-
-    # Feature NUEVA: Menciona algún símbolo de moneda (señal fuerte de Billing)
-    df["mentions_currency"] = (
-        df["full_text"].str.contains(r"\$|€|£|CLP|USD", regex=True).astype(int)
-    )
-
-    # Feature NUEVA: Contiene una mención (formato @usuario), sugiere red social
-    df["is_social_media_mention"] = (
-        df["full_text"].str.contains(r"\B@\w+", regex=True).astype(int)
-    )
-
-    # Feature NUEVA: Contiene dígitos (códigos de error, IDs, montos)
-    df["has_digits"] = df["full_text"].str.contains(r"\d", regex=True).astype(int)
-
-    # --- 3. Features de Palabras Clave (Keywords) ---
-    # Definimos las listas de palabras clave (regex)
-
-    # Technical_Support
-    support_keywords = (
-        r"\b(error|fallo|problema|caído|no funciona|lento|servidor|software|bug|down|broken|404|503|crash|"
-        r"failure|outage|offline|disconnect|no conecta|sin acceso|no puedo entrar|exception|timeout)\b"
-    )
-
-    # Billing_Support (expandida)
-    billing_keywords = (
-        r"bill|billing|invoice|factura|boleta|cobro|pago|payment|charge|charged|"
-        r"monto|amount|fee|cost|price|refund|rebate|overcharge|debit|credit|"
-        r"saldo|deuda|abono|receipt|statement|account balance|duda"
-    )
-
-    # Urgencia (Genérica)
-    urgent_keywords = (
-        r"\b(urgente|crítico|inmediato|asap|ahora|inmediatamente|emergencia|priority|prioridad|"
-        r"urgent|critical|immediate|now)\b"
-    )
-    # Customer_Service
-    service_keywords = (
-        r"\b(consulta|duda|info|información|portabilidad|planes|plan|contratar|ayuda|pregunta|horario|dirección|"
-        r"question|query|help|information|assist|cómo|cuando|donde|what|how|where|when)\b"
-    )
-    # Feature NUEVA: Service_Management
-    management_keywords = (
-        r"\b(solicitud|cambio|configuración|actualizar|modificar|install|upgrade|baja|cancelar|cancellation|"
-        r"request|change|configure|update|modify|installation|alta|activar|desactivar|activate|deactivate)\b"
-    )
-    # Feature NUEVA: Sentimiento Negativo (frustración)
-    negative_sentiment_keywords = (
-        r"\b(malo|pésimo|horrible|frustrado|molesto|rabia|basura|worst|terrible|queja|complaint|"
-        r"decepcionado|enojado|harto|angry|frustrated|awful|sucks|bad|molestia|problemas)\b|"
-        r"nunca funciona|siempre falla"  # Estos no necesitan \b
-    )
-    # Aplicamos las búsquedas sobre 'full_text' (mucho más rápido)
-    df["mentions_error"] = (
-        df["full_text"]
-        .str.contains(support_keywords, case=False, regex=True)
-        .astype(int)
-    )
-    df["mentions_billing"] = (
-        df["full_text"]
-        .str.contains(billing_keywords, case=False, regex=True)
-        .astype(int)
-    )
-    df["mentions_urgent"] = (
-        df["full_text"]
-        .str.contains(urgent_keywords, case=False, regex=True)
-        .astype(int)
-    )
-    df["mentions_service"] = (
-        df["full_text"]
-        .str.contains(service_keywords, case=False, regex=True)
-        .astype(int)
-    )
-    df["mentions_management"] = (
-        df["full_text"]
-        .str.contains(management_keywords, case=False, regex=True)
-        .astype(int)
-    )
-    df["mentions_sentiment_negative"] = (
-        df["full_text"]
-        .str.contains(negative_sentiment_keywords, case=False, regex=True)
-        .astype(int)
-    )
-
-    # Ya no necesitamos la columna 'full_text', la podemos borrar
-    df = df.drop(columns=["full_text"])
-
-    return df
-
-
 def build_simple_model():
     """Construye un modelo simple pero efectivo"""
 
@@ -341,7 +171,7 @@ def build_simple_model():
         *stopwords.words("english"),
         *stopwords.words("french"),
         *stopwords.words("german"),
-        # *stopwords.words("italian"),
+        *stopwords.words("italian"),
         *stopwords.words("portuguese"),
         *stopwords.words("spanish"),
     ]
@@ -351,15 +181,16 @@ def build_simple_model():
             (
                 "tfidf",
                 TfidfVectorizer(
-                    preprocessor=preprocess_text,
+                    preprocessor=tokenize_text,
                     sublinear_tf=True,
+                    smooth_idf=True,
                     norm="l2",
                     min_df=2,
                     max_df=0.85,
                     stop_words=stopwords_list,
                     strip_accents="unicode",
                     analyzer="word",
-                    # dtype=np.float32,
+                    dtype=np.float32,
                 ),
             ),
         ],
@@ -370,11 +201,11 @@ def build_simple_model():
             (
                 "tfidf",
                 TfidfVectorizer(
-                    preprocessor=preprocess_text,
+                    preprocessor=tokenize_text,
                     sublinear_tf=True,
                     norm="l2",
-                    min_df=4,
-                    max_df=0.75,
+                    min_df=3,
+                    max_df=0.90,
                     stop_words=stopwords_list,
                     strip_accents="unicode",
                     analyzer="word",
@@ -421,17 +252,17 @@ def build_simple_model():
     base_svc = LinearSVC(
         class_weight="balanced",
         random_state=42,
-        max_iter=5000,
+        max_iter=10000,
         dual=False,
         loss="squared_hinge",
-        tol=1e-4,
+        tol=1e-5,
     )
 
     model = ImbPipeline(
         [
             (
                 "oversample",
-                RandomOverSampler(random_state=42, sampling_strategy="not majority"),
+                RandomOverSampler(random_state=42),
             ),
             ("features", feature_transformer),  # El ColumnTransformer es el primer paso
             # ("svd", TruncatedSVD(n_components=300, random_state=42)),
@@ -449,19 +280,7 @@ def build_simple_model():
     return model
 
 
-def preprocess_text(text):
-    text = str(text).lower()
-    text = re.sub(r"http\S+|www\S+|mailto:\S+", "", text)  # URLs/correos
-    text = re.sub(r"\d+", "", text)  # números (opcional)
-    text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"[^\w\s]", " ", text)
-    tokens = [t for t in text.split() if len(t) > 2]
-    # lemmas = [lemmatizer.lemmatize(tok) for tok in tokens]
-    # return " ".join(tokens)
-    return " ".join(tokens)
-
-
-def train_simple_model(df, target_col="Simple_Target"):
+def train_simple_model(df, target_col="category"):
     print("\n=== ENTRENANDO MODELO SIMPLIFICADO CON GRIDSEARCHCV ===")
 
     numeric_features = [
@@ -505,11 +324,11 @@ def train_simple_model(df, target_col="Simple_Target"):
     # Fase 1: Búsqueda amplia
     print("=== FASE 1: Búsqueda Amplia ===")
     phase1_param_grid = {
-        "classifier__estimator__C": [0.1, 0.5, 1.0, 2.0, 5.0],
+        "classifier__estimator__C": [0.1, 0.5, 1.0, 2.0, 5, 0],
         "classifier__estimator__penalty": ["l2"],
         "features__subject_features__tfidf__max_features": [500, 1000, 2500],
-        "features__subject_features__tfidf__ngram_range": [(1, 1), (1, 2)],
-        "features__body_features__tfidf__max_features": [1000, 2000, 4000, 6000],
+        "features__subject_features__tfidf__ngram_range": [(1, 2), (1, 3)],
+        "features__body_features__tfidf__max_features": [500, 1000, 2000, 4000, 8000],
         "features__body_features__tfidf__ngram_range": [(1, 2), (1, 3), (2, 3)],
     }
 
@@ -605,6 +424,112 @@ def train_simple_model(df, target_col="Simple_Target"):
     return model, X_train, y_train
 
 
+# --- 3. Ingeniería de Features (Tu versión avanzada) ---
+def add_text_features(df: pd.DataFrame):
+    """
+    Agrega un conjunto robusto de features numéricas derivadas del texto
+    para mejorar la clasificación.
+    """
+    print("Extrayendo features numéricas del texto...")
+
+    df["subject"] = df["subject"].astype(str)
+    df["body"] = df["body"].astype(str)
+    df["full_text"] = df["subject"] + " " + df["body"]
+
+    # --- Features de Longitud y Ratio ---
+    df["subject_length"] = df["subject"].str.len()
+    df["body_length"] = df["body"].str.len()
+    df["subject_word_count"] = df["subject"].str.split().str.len()
+    df["body_word_count"] = df["body"].str.split().str.len()
+
+    df["subject_uppercase_ratio"] = df["subject"].apply(
+        lambda x: sum(1 for c in x if c.isupper()) / max(len(x), 1),
+    )
+    df["body_uppercase_ratio"] = df["body"].apply(
+        lambda x: sum(1 for c in x if c.isupper()) / max(len(x), 1),
+    )
+    df["avg_word_length_body"] = np.where(
+        df["body_word_count"] > 0,
+        df["body_length"] / df["body_word_count"],
+        0,
+    )
+
+    # --- Features de Puntuación y Caracteres Especiales ---
+    df["has_question_mark"] = (
+        df["full_text"].str.contains(r"\?", regex=True).astype(int)
+    )
+    df["has_exclamation"] = df["full_text"].str.contains(r"!", regex=True).astype(int)
+    df["mentions_currency"] = (
+        df["full_text"].str.contains(r"\$|€|£|CLP|USD", regex=True).astype(int)
+    )
+    df["is_social_media_mention"] = (
+        df["full_text"].str.contains(r"\B@\w+", regex=True).astype(int)
+    )
+    df["has_digits"] = df["full_text"].str.contains(r"\d", regex=True).astype(int)
+
+    # --- Features de Palabras Clave (Keywords mejoradas) ---
+    support_keywords = (
+        r"\b(error|fallo|problema|caído|no funciona|lento|servidor|software|bug|down|broken|404|503|crash|"
+        r"failure|outage|offline|disconnect|no conecta|sin acceso|no puedo entrar|exception|timeout)\b"
+    )
+    billing_keywords = (
+        r"\b(bill|billing|invoice|factura|boleta|cobro|pago|pagos|payment|charge|charged|cargos|"
+        r"monto|amount|fee|cost|costo|costos|price|precio|refund|reembolso|overcharge|debit|credit|"
+        r"tarjeta|saldo|deuda|abono|receipt|statement|recibo|dinero|money|compra|purchase)\b"
+    )
+    urgent_keywords = (
+        r"\b(urgente|crítico|inmediato|asap|ahora|inmediatamente|emergencia|priority|prioridad|"
+        r"urgent|critical|immediate|now)\b"
+    )
+    service_keywords = (
+        r"\b(consulta|duda|info|información|portabilidad|planes|plan|contratar|ayuda|pregunta|horario|dirección|"
+        r"question|query|help|information|assist|cómo|cuando|donde|what|how|where|when)\b"
+    )
+    management_keywords = (
+        r"\b(solicitud|cambio|configuración|actualizar|modificar|install|upgrade|baja|cancelar|cancellation|"
+        r"request|change|configure|update|modify|installation|alta|activar|desactivar|activate|deactivate)\b"
+    )
+    negative_sentiment_keywords = (
+        r"\b(malo|pésimo|horrible|frustrado|molesto|rabia|basura|worst|terrible|queja|complaint|"
+        r"decepcionado|enojado|harto|angry|frustrated|awful|sucks|bad|molestia|problemas)\b|"
+        r"nunca funciona|siempre falla"
+    )
+
+    df["mentions_error"] = (
+        df["full_text"]
+        .str.contains(support_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_billing"] = (
+        df["full_text"]
+        .str.contains(billing_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_urgent"] = (
+        df["full_text"]
+        .str.contains(urgent_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_service"] = (
+        df["full_text"]
+        .str.contains(service_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_management"] = (
+        df["full_text"]
+        .str.contains(management_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_sentiment_negative"] = (
+        df["full_text"]
+        .str.contains(negative_sentiment_keywords, case=False, regex=True)
+        .astype(int)
+    )
+
+    df = df.drop(columns=["full_text"])
+    return df
+
+
 def predict_ticket_simple(model, subject, body=""):
     """Predice la categoría de forma simple"""
 
@@ -635,22 +560,15 @@ def predict_ticket_simple(model, subject, body=""):
 
 if __name__ == "__main__":
     # Cargar datos
-    df_cleaned = pd.read_csv("data/processed/tickets_cleaned-3.csv")
+    df = pd.read_csv("data/processed/tickets_cleaned_con_category.csv")
 
-    # 1. Limpiar datos de texto
-    df_cleaned = clean_text_data(df_cleaned)
-
-    df = add_text_features(df_cleaned)
-
-    # 2. Crear categorías simplificadas
-    df_final = create_simple_categories(df_cleaned)
+    df = clean_text_data(df)
 
     # 3. Entrenar modelo simple
-    model, X_test, y_test = train_simple_model(df_final, target_col="Simple_Target")
+    model, X_test, y_test = train_simple_model(df, target_col="category")
 
     # 4. Guardar modelo
     joblib.dump(model, "models/simple_ticket_classifier.pkl")
-    df_final.to_csv("data/processed/tickets_simple_categories.csv", index=False)
 
     print("\n MODELO SIMPLE GUARDADO")
 

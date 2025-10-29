@@ -1,6 +1,7 @@
-from api.v1 import schemas
-from api.v1 import service
 from fastapi import APIRouter
+
+from app.api.v1 import schemas
+from app.api.v1 import service
 
 router = APIRouter()
 

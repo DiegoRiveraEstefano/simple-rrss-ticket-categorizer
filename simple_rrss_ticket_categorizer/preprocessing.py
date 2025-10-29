@@ -1,56 +1,51 @@
-# data_cleaning.py
+import re
 
+import numpy as np
 import pandas as pd
 
 
+# --- 1. Carga de Datos (Sin cambios) ---
 def load_data(filepath):
     """Carga los datos desde un archivo CSV o Excel."""
     if filepath.endswith(".csv"):
-        df: pd.DataFrame = pd.read_csv(filepath)
-    elif filepath.endswith(".xlsx"):
-        df: pd.DataFrame = pd.read_excel(filepath)
+        try:
+            df = pd.read_csv(filepath)
+        except Exception as e:
+            print(f"Error al leer CSV: {e}")
+            raise ValueError("No se pudo cargar el archivo CSV.")
+    elif filepath.endswith((".xlsx", ".xls")):
+        try:
+            df = pd.read_excel(filepath)
+        except Exception as e:
+            print(f"Error al leer Excel: {e}")
+            raise ValueError("No se pudo cargar el archivo Excel.")
     else:
         raise ValueError("Formato de archivo no soportado. Usa .csv o .xlsx")
-    if df is None:
-        raise ValueError("El archivo no contiene datos válidos.")
-    if df.empty:
+
+    if df is None or df.empty:
         raise ValueError("El archivo está vacío o no contiene datos válidos.")
+    print(f"Datos cargados exitosamente: {df.shape[0]} filas, {df.shape[1]} columnas")
     return df
 
 
-def clean_text_columns(df: pd.DataFrame):
-    """Limpia columnas de texto: quita espacios, normaliza mayúsculas/minúsculas, elimina caracteres especiales innecesarios."""
-    text_cols = ["subject", "body", "answer"]
-    for col in text_cols:
-        if col in df.columns:
-            # Convertir a string y quitar espacios
-            df[col] = df[col].astype(str).str.strip()
-            # Eliminar múltiples espacios y reemplazar por uno solo
-            df[col] = df[col].str.replace(r"\s+", " ", regex=True)
-            # Quitar caracteres no alfanuméricos (excepto espacios y puntuación básica)
-            df[col] = df[col].str.replace(r"[^\w\s.,!?;:()\-]", "", regex=True)
-    return df
-
-
+# --- 2. Manejo de Nulos (Sin cambios) ---
 def handle_missing_values(df: pd.DataFrame):
-    """Rellena o elimina valores faltantes según la columna."""
-    # Para columnas críticas: type, queue, priority
+    """Rellena valores faltantes con defaults apropiados."""
+    print("Manejando valores faltantes...")
+    # Columnas categóricas críticas
     df["type"] = df["type"].fillna("Unknown")
     df["queue"] = df["queue"].fillna("Unknown")
     df["priority"] = df["priority"].fillna("medium")
-
-    # Para language: si está vacío, asignar "en" (inglés) como default
     df["language"] = df["language"].fillna("en")
-
-    # Para business_type: si está vacío, asignar "Unknown"
     df["business_type"] = df["business_type"].fillna("Unknown")
 
-    # Para subject y body: llenar con texto por defecto si están vacíos
-    df["subject"] = df["subject"].fillna("No subject provided")
-    df["body"] = df["body"].fillna("No content provided")
-    df["answer"] = df["answer"].fillna("No resolution provided")
+    # Columnas de texto
+    text_cols = ["subject", "body", "answer"]
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna("")
 
-    # Para las columnas de tags (tag_1 a tag_9): llenar con string vacío
+    # Tags
     tag_columns = [f"tag_{i}" for i in range(1, 10)]
     for tag_col in tag_columns:
         if tag_col in df.columns:
@@ -59,146 +54,358 @@ def handle_missing_values(df: pd.DataFrame):
     return df
 
 
-def extract_features_from_description(df: pd.DataFrame):
-    """Extrae características útiles del texto de la descripción."""
-    # Combinar subject y body para análisis de texto
-    df["combined_text"] = df["subject"] + " " + df["body"]
+# --- 3. Ingeniería de Features (Tu versión avanzada) ---
+def add_text_features(df: pd.DataFrame):
+    """
+    Agrega un conjunto robusto de features numéricas derivadas del texto
+    para mejorar la clasificación.
+    """
+    print("Extrayendo features numéricas del texto...")
 
-    # Contar longitud del texto
-    df["text_length"] = df["combined_text"].str.len()
-    df["word_count"] = df["combined_text"].str.split().str.len()
+    df["subject"] = df["subject"].astype(str)
+    df["body"] = df["body"].astype(str)
+    df["full_text"] = df["subject"] + " " + df["body"]
 
-    # Detectar palabras clave relacionadas con urgencia
-    urgency_keywords = [
-        "urgent",
-        "critical",
-        "immediate",
-        "asap",
-        "emergency",
-        "urgente",
-        "crítico",
-        "inmediato",
-        "emergencia",
-        "dringend",
-        "kritisch",
-        "sofortig",
-        "urgence",
-        "critique",
-        "immédiat",
-    ]
+    # --- Features de Longitud y Ratio ---
+    df["subject_length"] = df["subject"].str.len()
+    df["body_length"] = df["body"].str.len()
+    df["subject_word_count"] = df["subject"].str.split().str.len()
+    df["body_word_count"] = df["body"].str.split().str.len()
 
-    df["has_urgency_keyword"] = (
-        df["combined_text"]
-        .str.contains(
-            "|".join(urgency_keywords),
-            case=False,
-            na=False,
-        )
+    df["subject_uppercase_ratio"] = df["subject"].apply(
+        lambda x: sum(1 for c in x if c.isupper()) / max(len(x), 1),
+    )
+    df["body_uppercase_ratio"] = df["body"].apply(
+        lambda x: sum(1 for c in x if c.isupper()) / max(len(x), 1),
+    )
+    df["avg_word_length_body"] = np.where(
+        df["body_word_count"] > 0,
+        df["body_length"] / df["body_word_count"],
+        0,
+    )
+
+    # --- Features de Puntuación y Caracteres Especiales ---
+    df["has_question_mark"] = (
+        df["full_text"].str.contains(r"\?", regex=True).astype(int)
+    )
+    df["has_exclamation"] = df["full_text"].str.contains(r"!", regex=True).astype(int)
+    df["mentions_currency"] = (
+        df["full_text"].str.contains(r"\$|€|£|CLP|USD", regex=True).astype(int)
+    )
+    df["is_social_media_mention"] = (
+        df["full_text"].str.contains(r"\B@\w+", regex=True).astype(int)
+    )
+    df["has_digits"] = df["full_text"].str.contains(r"\d", regex=True).astype(int)
+
+    # --- Features de Palabras Clave (Keywords mejoradas) ---
+    support_keywords = (
+        r"\b(error|fallo|problema|caído|no funciona|lento|servidor|software|bug|down|broken|404|503|crash|"
+        r"failure|outage|offline|disconnect|no conecta|sin acceso|no puedo entrar|exception|timeout)\b"
+    )
+    billing_keywords = (
+        r"\b(bill|billing|invoice|factura|boleta|cobro|pago|pagos|payment|charge|charged|cargos|"
+        r"monto|amount|fee|cost|costo|costos|price|precio|refund|reembolso|overcharge|debit|credit|"
+        r"tarjeta|saldo|deuda|abono|receipt|statement|recibo|dinero|money|compra|purchase)\b"
+    )
+    urgent_keywords = (
+        r"\b(urgente|crítico|inmediato|asap|ahora|inmediatamente|emergencia|priority|prioridad|"
+        r"urgent|critical|immediate|now)\b"
+    )
+    service_keywords = (
+        r"\b(consulta|duda|info|información|portabilidad|planes|plan|contratar|ayuda|pregunta|horario|dirección|"
+        r"question|query|help|information|assist|cómo|cuando|donde|what|how|where|when)\b"
+    )
+    management_keywords = (
+        r"\b(solicitud|cambio|configuración|actualizar|modificar|install|upgrade|baja|cancelar|cancellation|"
+        r"request|change|configure|update|modify|installation|alta|activar|desactivar|activate|deactivate)\b"
+    )
+    negative_sentiment_keywords = (
+        r"\b(malo|pésimo|horrible|frustrado|molesto|rabia|basura|worst|terrible|queja|complaint|"
+        r"decepcionado|enojado|harto|angry|frustrated|awful|sucks|bad|molestia|problemas)\b|"
+        r"nunca funciona|siempre falla"
+    )
+
+    df["mentions_error"] = (
+        df["full_text"]
+        .str.contains(support_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_billing"] = (
+        df["full_text"]
+        .str.contains(billing_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_urgent"] = (
+        df["full_text"]
+        .str.contains(urgent_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_service"] = (
+        df["full_text"]
+        .str.contains(service_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_management"] = (
+        df["full_text"]
+        .str.contains(management_keywords, case=False, regex=True)
+        .astype(int)
+    )
+    df["mentions_sentiment_negative"] = (
+        df["full_text"]
+        .str.contains(negative_sentiment_keywords, case=False, regex=True)
         .astype(int)
     )
 
-    # Detectar si hay errores técnicos
-    error_keywords = [
-        "error",
-        "bug",
-        "fail",
-        "crash",
-        "broken",
-        "issue",
-        "problem",
-        "error",
-        "falla",
-        "trabado",
-        "problema",
-        "incidente",
-        "fehler",
-        "absturz",
-        "kaputt",
-        "problem",
-        "erreur",
-        "bug",
-        "panne",
-        "casse",
-        "problème",
-    ]
+    df = df.drop(columns=["full_text"])
+    return df
 
-    df["has_error_keyword"] = (
-        df["combined_text"]
-        .str.contains(
-            "|".join(error_keywords),
-            case=False,
-            na=False,
-        )
-        .astype(int)
+
+def create_category_target(df: pd.DataFrame):
+    """
+    Crea una columna 'category' unificada basada en señales jerárquicas
+    (queue > tags > type > business_type), con cobertura multilingüe y heurísticas contextualizadas.
+    """
+
+    print("🧩 Creando columna 'category' jerárquica optimizada...")
+
+    # ======================================================
+    # 1. Palabras clave multilingües agrupadas
+    # ======================================================
+    BILLING_KEYWORDS = re.compile(
+        r"\b(billing|payment|invoice|refund|factura|cobro|overcharge|deuda|"
+        r"facturation|paiement|remboursement|abrechnung|rechnung|zahlung|"
+        r"pagamento|cobrança|fatura|reembolso|dinheiro|money|purchase|compra)\b",
+        re.I,
     )
 
-    return df
+    TECH_KEYWORDS = re.compile(
+        r"\b(tech|support|incident|bug|error|crash|network|server|maintenance|"
+        r"falla|ca[ií]do|servicio|outage|system|hardware|software|performance|"
+        r"panne|störung|problema|defeito|falha|offline)\b",
+        re.I,
+    )
 
+    MGMT_KEYWORDS = re.compile(
+        r"\b(manage|config|change|upgrade|install|activate|deactivate|cancel|"
+        r"gestión|solicitud|modificar|configurar|setup|update|"
+        r"anfrage|konfigurieren|configuração|solicitar)\b",
+        re.I,
+    )
 
-def create_target_column(df: pd.DataFrame):
-    """Crea columnas objetivo para clasificación basadas en el dataset."""
-    # Opción 1: Usar 'type' como objetivo principal
-    df["target_type"] = df["type"].copy()
+    SERVICE_KEYWORDS = re.compile(
+        r"\b(customer|service|sales|inquiry|consulta|question|help|account|"
+        r"assist|pregunta|pedido|retour|devolu|vendas|aide|info|informação|"
+        r"support_client|consult|ventes|helpdesk)\b",
+        re.I,
+    )
 
-    # Opción 2: Usar 'queue' como objetivo secundario
-    df["target_queue"] = df["queue"].copy()
+    # ======================================================
+    # 2. Columnas relevantes (solo las existentes)
+    # ======================================================
+    tag_cols = [c for c in df.columns if c.startswith("tag_")]
+    base_cols = ["queue", "type", "business_type"]
 
-    # Opción 3: Crear categoría combinada para clasificación más granular
-    df["target_combined"] = df["type"] + "_" + df["queue"]
-
-    return df
-
-
-def encode_categorical_variables(df: pd.DataFrame):
-    """Codifica variables categóricas para modelado."""
-    # Columnas categóricas principales
-    categorical_columns = ["type", "queue", "priority", "language", "business_type"]
-
-    # Crear dummies para las categorías principales
-    for col in categorical_columns:
+    for col in base_cols + tag_cols:
         if col in df.columns:
-            dummies = pd.get_dummies(df[col], prefix=col)
-            df = pd.concat([df, dummies], axis=1)
+            df[col] = df[col].astype(str).fillna("").str.lower()
 
-    # Crear características de tags (combinar todos los tags en una lista)
-    tag_columns = [f"tag_{i}" for i in range(1, 10) if f"tag_{i}" in df.columns]
-    if tag_columns:
-        df["all_tags"] = df[tag_columns].apply(
-            lambda x: ",".join(x.dropna().astype(str)),
-            axis=1,
+    # ======================================================
+    # 3. Función auxiliar de detección (por regex)
+    # ======================================================
+    def detect_category(text):
+        if BILLING_KEYWORDS.search(text):
+            return "Billing"
+        if TECH_KEYWORDS.search(text):
+            return "Technical_Support"
+        if MGMT_KEYWORDS.search(text):
+            return "Service_Management"
+        if SERVICE_KEYWORDS.search(text):
+            return "Customer_Service"
+        return None
+
+    # ======================================================
+    # 4. Inicialización vacía
+    # ======================================================
+    df["category"] = None
+
+    # ======================================================
+    # 5. Jerarquía de asignación
+    # ======================================================
+
+    # 5.1 Desde `queue` (prioridad máxima)
+    df.loc[
+        df["queue"].apply(lambda x: bool(BILLING_KEYWORDS.search(x))),
+        "category",
+    ] = "Billing"
+    df.loc[df["queue"].apply(lambda x: bool(TECH_KEYWORDS.search(x))), "category"] = (
+        "Technical_Support"
+    )
+    df.loc[df["queue"].apply(lambda x: bool(MGMT_KEYWORDS.search(x))), "category"] = (
+        "Service_Management"
+    )
+    df.loc[
+        df["queue"].apply(lambda x: bool(SERVICE_KEYWORDS.search(x))),
+        "category",
+    ] = "Customer_Service"
+
+    # 5.2 Desde tags (prioridad media)
+    for tag_col in tag_cols:
+        mask = df["category"].isna() & df[tag_col].notna()
+        df.loc[mask, "category"] = df.loc[mask, tag_col].apply(
+            lambda x: detect_category(str(x)),
         )
-        # Crear dummies para los tags más comunes
-        all_tags_combined = df[tag_columns].stack().value_counts()
-        top_tags = all_tags_combined.head(20).index  # Top 20 tags más comunes
 
-        for tag in top_tags:
-            df[f"tag_{tag.replace(' ', '_').lower()}"] = df[tag_columns].apply(
-                lambda x: 1 if tag in x.values else 0,
-                axis=1,
-            )
+    # 5.3 Desde `type` (prioridad baja)
+    type_map = {
+        "incident": "Technical_Support",
+        "problem": "Customer_Service",
+        "change": "Service_Management",
+        "request": "Customer_Service",
+    }
+    df.loc[df["category"].isna(), "category"] = df["type"].map(type_map)
+
+    # 5.4 Desde `business_type` (contexto residual)
+    # Ejemplo: empresas de "Tech" → soporte técnico, "Store" → servicio o ventas
+    df.loc[
+        df["category"].isna()
+        & df["business_type"].str.contains("store", case=False, na=False),
+        "category",
+    ] = "Customer_Service"
+    df.loc[
+        df["category"].isna()
+        & df["business_type"].str.contains(
+            "tech|it|software|consulting",
+            case=False,
+            na=False,
+        ),
+        "category",
+    ] = "Technical_Support"
+
+    # 5.5 Fallback final
+    df["category"] = df["category"].fillna("Customer_Service")
+
+    # ======================================================
+    # 6. Limpieza final y resumen
+    # ======================================================
+    df["category"] = df["category"].astype("category")
+
+    print("\n📊 Distribución final de categorías:")
+    print(df["category"].value_counts())
 
     return df
 
 
+# --- 5. Limpieza de Texto (Mejorada) ---
+def clean_text_columns(df: pd.DataFrame):
+    """
+    Limpia columnas de texto: normaliza a minúsculas y quita espacios extra.
+    Se ejecuta DESPUÉS de add_text_features para no borrar '?' o '$'.
+    """
+    print("Normalizando columnas de texto (minúsculas, espacios)...")
+    text_cols = ["subject", "body", "answer"]
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.lower().str.strip()
+            df[col] = df[col].str.replace(r"\s+", " ", regex=True)
+            # Ya no borramos la puntuación aquí, eso lo hará el preprocesador del modelo
+    return df
+
+
+# --- 6. Pipeline de Preprocesamiento (Actualizado) ---
 def preprocess_data(df: pd.DataFrame):
-    """Función principal que aplica todas las transformaciones."""
-    print("Iniciando limpieza de datos...")
-    df = clean_text_columns(df)
+    """Función principal que aplica todas las transformaciones consolidadas."""
+    print("Iniciando preprocesamiento de datos...")
+
+    # 1. Llenar todos los valores NaN primero
     df = handle_missing_values(df)
-    df = extract_features_from_description(df)
-    df = create_target_column(df)
-    df = encode_categorical_variables(df)
-    print("Limpieza completada.")
+
+    # 2. Correr la extracción de features MIENTRAS el texto aún tiene puntuación
+    df = add_text_features(df)
+
+    # 3. Crear el target final del modelo (¡NUEVA FUNCIÓN!)
+    df = create_category_target(df)
+
+    # 4. Correr la limpieza de texto (minúsculas, espacios) AL FINAL
+    df = clean_text_columns(df)
+
+    # Nota: Se eliminaron 'create_target_column' y 'encode_categorical_variables'
+    # por ser redundantes o perjudiciales para el pipeline del modelo.
+
+    print("Preprocesamiento completado.")
     return df
 
 
+def drop_columns(df: pd.DataFrame, columns_to_drop: list):
+    """Elimina columnas innecesarias del DataFrame."""
+    print(f"Eliminando columnas innecesarias: {columns_to_drop}")
+    df = df.drop(columns=columns_to_drop, errors="ignore")
+    return df
+
+
+# --- 7. Ejecución Principal ---
 if __name__ == "__main__":
-    # Ejemplo de uso
-    df = load_data(
-        "data/raw/dataset-tickets-multi-lang3-4k.csv",
-    )  # Actualiza con la ruta correcta
-    df_cleaned = preprocess_data(df)
-    df_cleaned.to_csv("data/processed/tickets_cleaned-3.csv", index=False)
-    print("Datos guardados en 'tickets_cleaned-3.csv'")
-    print(f"Shape del dataset limpio: {df_cleaned.shape}")
-    print(f"Columnas disponibles: {df_cleaned.columns.tolist()}")
+    # Actualiza con la ruta correcta
+    input_filepath = "data/raw/dataset-tickets-multi-lang3-4k.csv"
+    output_filepath = "data/processed/tickets_cleaned_con_category.csv"
+
+    try:
+        df = load_data(input_filepath)
+
+        print(df["queue"].value_counts())
+        print(df["type"].value_counts())
+        print(df["business_type"].value_counts())
+        print(df["tag_1"].value_counts())
+
+        df_cleaned = preprocess_data(df)
+
+        # Eliminar columnas innecesarias
+        df_cleaned = drop_columns(
+            df_cleaned,
+            [
+                "type",
+                "queue",
+                "business_type",
+                "answer",
+                "priority",
+                "language",
+                "tag_1",
+                "tag_2",
+                "tag_3",
+                "tag_4",
+                "tag_5",
+                "tag_6",
+                "tag_7",
+                "tag_8",
+                "tag_9",
+            ],
+        )
+
+        # Guardar el archivo limpio y eficiente
+        df_cleaned.to_csv(output_filepath, index=False)
+
+        print(f"\n✅ Datos guardados en '{output_filepath}'")
+        print(f"Shape del dataset limpio: {df_cleaned.shape}")
+
+        # Mostrar columnas clave para confirmar
+        print("\nInformación del DataFrame limpio (columnas clave):")
+        columnas_clave = [
+            "subject",
+            "body",
+            "category",  # <-- Tu nueva columna target
+            "mentions_billing",
+            "mentions_error",
+            "mentions_service",
+        ]
+        columnas_existentes = [
+            col for col in columnas_clave if col in df_cleaned.columns
+        ]
+        print(df_cleaned[columnas_existentes].info())
+
+        # Mostrar Distribucion de Categorias
+        print("\nDistribución de Categorias:")
+        print(df_cleaned["category"].value_counts())
+
+    except (ValueError, FileNotFoundError) as e:
+        print(f"\n❌ Error en el procesamiento: {e}")
+    except Exception as e:
+        print(f"\n❌ Ocurrió un error inesperado: {e}")

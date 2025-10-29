@@ -1,6 +1,15 @@
-from api.v1 import routes
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+
+
+def tokenize_text(text, amount=2):
+    """Preprocesa el texto para que sea compatible con el modelo."""
+    return " ".join(
+        [t for t in text.split() if len(t) > amount],
+    )
+
+
+from app.api.v1 import routes  # noqa: E402
 
 app = FastAPI(
     title="Ticket Categorizer API",
